@@ -77,6 +77,7 @@ def get_or_create_session(session_id: str):
                 api_base=cfg.get("api_base", "http://localhost:8000/v1"),
                 api_key=cfg.get("api_key", "EMPTY"),
                 prompt=cfg.get("prompt", "Describe what you see in this image in one sentence."),
+                reasoning_effort=cfg.get("reasoning_effort"),
                 max_tokens=cfg.get("max_tokens", 512),
             ),
             "show_request_payload": False,
@@ -363,6 +364,7 @@ async def websocket_handler(request):
                 "model": svc.model,
                 "api_base": svc.api_base,
                 "prompt": svc.prompt,
+                "reasoning_effort": svc.reasoning_effort,
                 "max_tokens": svc.max_tokens,
                 "process_every": _VPT.process_every_n_frames,
                 "session_id": session_id,
@@ -393,6 +395,17 @@ async def websocket_handler(request):
                                     "max_tokens": max_tokens,
                                 }
                             )
+
+                    elif data.get("type") == "update_reasoning":
+                        effort = data.get("reasoning_effort")
+                        reply = {"type": "reasoning_updated"}
+                        if effort not in (None, "none", "low", "medium", "high"):
+                            reply["error"] = "Unsupported thinking setting"
+                        else:
+                            svc.reasoning_effort = effort
+                            logger.info(f"[{session_id}] Reasoning effort updated: {effort}")
+                        reply["reasoning_effort"] = svc.reasoning_effort
+                        await ws.send_json(reply)
 
                     elif data.get("type") == "update_model":
                         new_model = data.get("model", "").strip()
@@ -1126,6 +1139,13 @@ def main():
         ),
     )
 
+    parser.add_argument(
+        "--reasoning-effort",
+        choices=["none", "low", "medium", "high"],
+        default=None,
+        help="Optional reasoning setting for compatible backends; 'none' disables Ollama thinking",
+    )
+
     args = parser.parse_args()
     if args.max_tokens < 1:
         parser.error("--max-tokens must be >= 1")
@@ -1196,6 +1216,7 @@ def main():
         api_base=api_base,
         api_key=api_key,
         prompt=args.prompt,
+        reasoning_effort=args.reasoning_effort,
         max_tokens=args.max_tokens,
     )
     default_vlm_config = {
@@ -1203,6 +1224,7 @@ def main():
         "api_base": api_base,
         "api_key": api_key,
         "prompt": args.prompt,
+        "reasoning_effort": args.reasoning_effort,
         "max_tokens": args.max_tokens,
     }
     sessions["default"] = {

@@ -150,4 +150,3 @@ jobs:
     - name: Type check (mypy)
       run: mypy src/ --ignore-missing-imports
       continue-on-error: true
-
