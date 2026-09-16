@@ -19,6 +19,17 @@ fi
 source "$HOME/.config/live-vlm-webui/kiosk.env"
 : "${KIOSK_PORT:?Set the server port}"
 : "${KIOSK_BROWSER_PROFILE:?Set a dedicated browser profile}"
+mode=${KIOSK_DISPLAY_MODE:-kiosk}
+case "$mode" in
+    full) mode=kiosk ;;
+    kiosk|window) ;;
+    *) echo 'KIOSK_DISPLAY_MODE must be kiosk, full, or window.' >&2; exit 1 ;;
+esac
+
+if [[ ${1:-} == --configure-window ]]; then
+    exec python3 "$(dirname -- "${BASH_SOURCE[0]}")/configure_kiosk_window.py" \
+        "$mode" "$KIOSK_BROWSER_PROFILE"
+fi
 
 browser=${KIOSK_BROWSER:-}
 if [[ -z $browser ]]; then
@@ -47,7 +58,6 @@ mkdir -p "$KIOSK_BROWSER_PROFILE"
 # Use this dedicated profile only for the demo (permission is auto-granted).
 browser_args=(
     --user-data-dir="$KIOSK_BROWSER_PROFILE"
-    --kiosk
     --no-first-run
     --no-default-browser-check
     --disable-session-crashed-bubble
@@ -55,4 +65,11 @@ browser_args=(
     --use-fake-ui-for-media-stream
 )
 
-exec "$browser" "${browser_args[@]}" "${url}?autostart=1"
+if [[ $mode == kiosk ]]; then
+    browser_args+=(--kiosk "${url}?autostart=1")
+else
+    # App mode keeps a normal title bar without tabs or an address bar.
+    # X11's post-start helper fits it to the left half of the desktop work area.
+    browser_args+=(--window-size=960,1080 --window-position=0,0 "--app=${url}?autostart=1")
+fi
+exec "$browser" "${browser_args[@]}"

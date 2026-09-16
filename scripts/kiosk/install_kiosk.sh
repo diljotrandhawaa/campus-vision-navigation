@@ -18,14 +18,16 @@ if [[ ! -e $config_dir/kiosk.env ]]; then
     install -m 600 "$script_dir/kiosk.env.example" "$config_dir/kiosk.env"
 fi
 install -m 755 "$script_dir/start_kiosk_server.sh" "$script_dir/start_kiosk_browser.sh" "$lib_dir/"
+install -m 644 "$script_dir/configure_kiosk_window.py" "$lib_dir/"
 install -m 644 "$script_dir/"*.service "$unit_dir/"
 
-# The desktop-entry Exec field does not expand ~ or $HOME. A quoted shell handles it.
+# Expand the home directory in the shell; avoid nested desktop-entry escaping.
+# Shell tilde expansion also preserves spaces in the home directory.
 cat > "$autostart_dir/live-vlm-kiosk.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=Live VLM kiosk
-Exec=/bin/sh -c "exec \"\$HOME/.local/lib/live-vlm-webui-kiosk/start_kiosk_browser.sh\" --session"
+Exec=/bin/sh -c "exec ~/.local/lib/live-vlm-webui-kiosk/start_kiosk_browser.sh --session"
 Terminal=false
 EOF
 systemctl --user daemon-reload

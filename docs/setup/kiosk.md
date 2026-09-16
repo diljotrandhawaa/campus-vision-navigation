@@ -85,6 +85,7 @@ KIOSK_MAX_TOKENS=128
 KIOSK_BACKEND_READY_URL=http://localhost:11434/v1/models
 KIOSK_BROWSER=
 KIOSK_BROWSER_PROFILE="$HOME/live-vlm-webui-kiosk-profile"
+KIOSK_DISPLAY_MODE=kiosk
 ```
 
 If you installed with `pipx`, `KIOSK_SERVER_BIN` will usually be:
@@ -99,6 +100,35 @@ quote values containing spaces. The browser waits for both WebUI and
 for your backend (for example `http://localhost:8000/v1/models` for vLLM), or set
 it empty to skip that check. HTTP readiness does not prove the configured model
 is loaded or inference works. `KIOSK_MAX_TOKENS=128` keeps demo responses short.
+
+### Fullscreen or App Window
+
+Set `KIOSK_DISPLAY_MODE` in `~/.config/live-vlm-webui/kiosk.env`:
+
+| Value | Display |
+| --- | --- |
+| `kiosk` (default) | Fullscreen, without desktop panels or a title bar. |
+| `full` | Alias for `kiosk`; the same fullscreen behavior. |
+| `window` | Movable app window with a title bar, without browser tabs or an address bar. On X11, it opens on the left half of the current desktop work area. |
+
+Apply a change by restarting the browser:
+
+```bash
+systemctl --user restart live-vlm-kiosk-browser.service
+```
+
+The saved mode also applies after desktop login or reboot. Both modes retain
+camera/inference autostart and use the same dedicated profile. Window positioning
+is applied once at startup; users can subsequently move or resize the app.
+
+On X11, install the optional positioning tools (`sudo apt install wmctrl x11-utils`).
+The post-start helper targets only this user's dedicated browser profile. It
+corrects Chromium/X11 fullscreen state mismatches in kiosk mode and accounts for
+desktop panels and window decorations in window mode. It uses the current
+desktop work area, which may span multiple monitors; it is not a monitor selector.
+On Wayland, or without those tools, the browser launch flags still select the
+mode, but window placement follows the compositor; the window-size hint is
+960×1080. The X11 fullscreen workaround is not applied there.
 
 ## Enable Boot-to-Demo
 

@@ -4,6 +4,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -52,7 +53,47 @@ def test_session_imports_display_before_starting_browser(kiosk_account):
     assert args[-3:] == ["--user", "start", "live-vlm-kiosk-browser.service"]
 
 
-def test_launchers_use_config_and_wait_for_backend(kiosk_account, tmp_path):
+def test_installed_desktop_entry_launches_with_gio(kiosk_account):
+    """Exercise GNOME's parser; desktop-file-validate misses invalid Exec escapes."""
+    home, _, calls, env = kiosk_account
+    if os.geteuid() == 0:
+        pytest.skip("Installer intentionally refuses root")
+    python = "/usr/bin/python3"
+    if (
+        not Path(python).exists()
+        or subprocess.run(
+            [python, "-c", "from gi.repository import Gio"], capture_output=True
+        ).returncode
+    ):
+        pytest.skip("Requires the system Python with PyGObject")
+    subprocess.run([str(SCRIPTS / "install_kiosk.sh")], env=env, check=True)
+    calls.write_text("")
+    desktop = home / ".config/autostart/live-vlm-kiosk.desktop"
+    subprocess.run(
+        [
+            python,
+            "-c",
+            "from gi.repository import Gio; import sys; "
+            "app = Gio.DesktopAppInfo.new_from_filename(sys.argv[1]); "
+            "assert app is not None, 'Desktop entry rejected by GIO'; "
+            "assert app.launch([], None)",
+            str(desktop),
+        ],
+        env=env,
+        check=True,
+        timeout=10,
+    )
+    deadline = time.monotonic() + 5
+    expected = ["--user", "start", "live-vlm-kiosk-browser.service"]
+    while time.monotonic() < deadline:
+        if calls.read_text().splitlines()[-3:] == expected:
+            break
+        time.sleep(0.05)
+    assert calls.read_text().splitlines()[-3:] == expected
+
+
+@pytest.mark.parametrize("mode", [None, "kiosk", "full", "window"])
+def test_launchers_use_config_and_wait_for_backend(kiosk_account, tmp_path, mode):
     home, bin_dir, _, env = kiosk_account
     config_dir = home / ".config/live-vlm-webui"
     config_dir.mkdir(parents=True)
@@ -67,6 +108,10 @@ def test_launchers_use_config_and_wait_for_backend(kiosk_account, tmp_path):
         "KIOSK_MODEL='demo/model:7b'\nKIOSK_PORT=18090\n"
         "KIOSK_PROMPT='Describe the display; do not execute this.'\n"
     )
+    if mode is None:
+        config = config.replace("KIOSK_DISPLAY_MODE=kiosk\n", "")
+    else:
+        config += f"KIOSK_DISPLAY_MODE={mode}\n"
     (config_dir / "kiosk.env").write_text(config)
     subprocess.run([str(SCRIPTS / "start_kiosk_server.sh")], env=env, check=True)
     args = args_file.read_text().splitlines()
@@ -89,10 +134,38 @@ def test_launchers_use_config_and_wait_for_backend(kiosk_account, tmp_path):
     sleep.chmod(0o755)
     subprocess.run([str(SCRIPTS / "start_kiosk_browser.sh")], env=env, check=True, timeout=5)
     args = args_file.read_text().splitlines()
-    assert args[-1] == "http://localhost:18090/?autostart=1"
+    if mode == "window":
+        assert args[-1] == "--app=http://localhost:18090/?autostart=1"
+        assert "--kiosk" not in args
+        assert "--window-size=960,1080" in args
+    else:
+        assert args[-1] == "http://localhost:18090/?autostart=1"
+        assert "--kiosk" in args
     assert f"--user-data-dir={home}/live-vlm-webui-kiosk-profile" in args
     assert "--use-fake-ui-for-media-stream" in args
     assert "--use-fake-device-for-media-stream" not in args
     assert "--ignore-certificate-errors" not in args
     assert probes.read_text().count("http://localhost:18090/") == 2
     assert "http://localhost:11434/v1/models" in probes.read_text()
+
+
+def test_invalid_display_mode_fails_before_starting_browser(kiosk_account):
+    home, _, _, env = kiosk_account
+    config_dir = home / ".config/live-vlm-webui"
+    config_dir.mkdir(parents=True)
+    (config_dir / "kiosk.env").write_text(
+        (SCRIPTS / "kiosk.env.example").read_text() + "\nKIOSK_DISPLAY_MODE=typo\n"
+    )
+    result = subprocess.run(
+        [str(SCRIPTS / "start_kiosk_browser.sh")], env=env, capture_output=True, text=True
+    )
+    assert result.returncode == 1
+    assert "KIOSK_DISPLAY_MODE must be kiosk, full, or window" in result.stderr
+
+
+def test_half_workarea_accounts_for_panel_and_window_decorations():
+    import runpy
+
+    geometry = runpy.run_path(str(SCRIPTS / "configure_kiosk_window.py"))["half_workarea"]
+    desktops = "0  * DG: 1920x1200 VP: 0,0 WA: 72,30 1848x1170 Desktop 1\n"
+    assert geometry(desktops, [1, 1, 37, 1]) == (72, 30, 922, 1132)
