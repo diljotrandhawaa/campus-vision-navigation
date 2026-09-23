@@ -2,6 +2,8 @@
 const $ = id => document.getElementById(id);
 const video = $("video"), canvas = $("result"), context = canvas.getContext("2d");
 const MAX_AGE_MS = 1500;
+const OCR_MAX_AGE_MS = 5000;
+let lastOcr = null, ocrAvailable = true;
 let generation = 0, running = false, socket = null, stream = null, pending = null;
 let revision = 0, configuredRevision = -1, frameId = 0, nextTimer = null, frameCallback = null;
 let lastCameraFrame = 0, lastVideoTime = -1, lastCapture = 0, lastResult = null;
@@ -51,6 +53,7 @@ function stop(message = "Camera stopped") {
   $("start").disabled = false;
   $("stop").disabled = true;
   clearAnalysis(message);
+  clearOcr(message);
   instruction("idle", message);
   status(message);
   $("fps").textContent = "—";
@@ -80,9 +83,10 @@ function watchVideoFrames(token) {
 function configure() {
   revision++;
   clearAnalysis("Finding target…");
+  clearOcr($("ocr-enabled").checked ? "Waiting for OCR scan" : "OCR off");
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({
     type: "configure", target: $("target").value,
-    confidence: Number($("confidence").value), revision
+    confidence: Number($("confidence").value), ocr: $("ocr-enabled").checked, revision
   }));
 }
 
@@ -165,7 +169,7 @@ async function capture() {
   pending = frame;  // Includes JPEG encoding time: never allow a second in-flight frame.
   lastCapture = frame.captured;
   image.getContext("2d").drawImage(video, 0, 0, image.width, image.height);
-  const jpeg = await new Promise(resolve => image.toBlob(resolve, "image/jpeg", 0.8));
+  const jpeg = await new Promise(resolve => image.toBlob(resolve, "image/jpeg", $("ocr-enabled").checked ? 0.9 : 0.8));
   if (token !== generation || !running || pending !== frame) return;
   if (frame.revision !== revision) { pending = null; schedule(); return; }
   if (!jpeg) { $("error").textContent = "Could not encode a camera frame."; stop("Camera error"); return; }
@@ -176,7 +180,18 @@ async function capture() {
 
 function handleMessage(data) {
   if (data.type === "ready") {
-    $("model").textContent = data.model || "YOLO-World";
+    $("model").textContent = data.model || "YOLOE";
+    const selected = $("target").value;
+    if (Array.isArray(data.classes) && data.classes.length) {
+      $("target").replaceChildren(...data.classes.map(label => new Option(label, label)));
+      if (data.classes.includes(selected)) $("target").value = selected;
+    }
+    ocrAvailable = data.ocr_enabled === true;
+    $("ocr-enabled").disabled = !ocrAvailable;
+    if (!ocrAvailable) $("ocr-enabled").checked = false;
+    $("ocr-mode").textContent = ocrAvailable
+      ? `PP-OCRv5 · at least ${data.ocr_interval || 1}s between scans`
+      : "OCR disabled at server startup.";
     $("device").textContent = `Device ${data.device} · inference size ${data.imgsz}`;
     configure();
     return;
@@ -200,6 +215,8 @@ function handleMessage(data) {
   }
   const now = performance.now();
   if (data.type === "result" && data.revision === revision && frame.revision === revision && !document.hidden) {
+    // OCR is a labelled snapshot with its own shorter-lived history, never current guidance.
+    if (now - lastCameraFrame <= 800) renderOcr(data.ocr, frame);
     if (now - frame.captured <= MAX_AGE_MS && now - lastCameraFrame <= 800) {
       render(data, frame);
       const ms = performance.now() - frame.captured;
@@ -211,7 +228,11 @@ function handleMessage(data) {
       $("detector").textContent = `${data.detector_ms} ms`;
       lastResult = {captured: frame.captured};
       status("Streaming", true);
-    } else clearAnalysis("Result too old — waiting");
+    } else {
+      $("detector").textContent = `${data.detector_ms} ms`;
+      clearAnalysis("Result too old — waiting");
+      status("Waiting for fresh guidance");
+    }
   }
   schedule(Math.max(0, 1000 / Number($("rate").value) - (performance.now() - lastCapture)));
 }
@@ -299,7 +320,14 @@ setInterval(() => {
     $("age").textContent = `${Math.round(age)} ms`;
     if (age > MAX_AGE_MS) clearAnalysis("Analysis is stale");
   }
-  if (lastCameraFrame && now - lastCameraFrame > 800) clearAnalysis("Camera paused — waiting");
+  if (lastOcr) {
+    const age = now - lastOcr.captured;
+    $("ocr-age").textContent = `Age: ${(age / 1000).toFixed(1)} s`;
+    if (age > OCR_MAX_AGE_MS) clearOcr("OCR snapshot expired — waiting for a new scan");
+  }
+  if (lastCameraFrame && now - lastCameraFrame > 800) {
+    clearAnalysis("Camera paused — waiting"); clearOcr("Camera paused");
+  }
   if (pending && now - pending.captured > 10000) {
     $("error").textContent = "No result for 10 seconds. Check the GB10 terminal, then restart the camera.";
     stop("Response timed out");
@@ -312,6 +340,8 @@ $("start").addEventListener("click", start);
 $("stop").addEventListener("click", () => stop());
 $("camera").addEventListener("change", () => { if (running) start(); });
 $("target").addEventListener("change", configure);
+$("ocr-enabled").addEventListener("change", configure);
+$("size").addEventListener("change", configure);
 $("confidence").addEventListener("input", () => { $("confidence-value").textContent = Number($("confidence").value).toFixed(2); });
 $("confidence").addEventListener("change", configure);
 $("save").addEventListener("click", () => {
@@ -325,8 +355,69 @@ $("save").addEventListener("click", () => {
 });
 document.addEventListener("visibilitychange", () => {
   if (!running) return;
-  if (document.hidden) clearAnalysis("Tab paused"); else schedule();
+  if (document.hidden) { clearAnalysis("Tab paused"); clearOcr("Tab paused"); } else schedule();
 });
 window.addEventListener("beforeunload", () => stop());
 navigator.mediaDevices?.addEventListener?.("devicechange", () => refreshCameras().catch(() => {}));
 refreshCameras().catch(() => {});
+
+
+function clearOcr(message = "Waiting for OCR scan") {
+  lastOcr = null;
+  $("ocr-frame").hidden = true;
+  $("ocr-empty").hidden = false;
+  $("ocr-empty").textContent = message;
+  $("ocr-state").textContent = message;
+  $("ocr-readings").replaceChildren();
+  $("ocr-age").textContent = "Age: —";
+  $("ocr-time").textContent = "OCR: —";
+}
+
+function renderOcr(ocr, frame) {
+  if (!ocr || ocr.status === "skipped") return;
+  if (!ocrAvailable || !$("ocr-enabled").checked || ocr.status === "disabled") {
+    clearOcr("OCR off"); return;
+  }
+  if (ocr.status === "error") { clearOcr(ocr.message || "OCR failed"); return; }
+  if (performance.now() - frame.captured > OCR_MAX_AGE_MS) {
+    clearOcr("OCR result too old — hold the camera steady"); return;
+  }
+  if (ocr.status !== "ok") return;
+  const target = $("ocr-frame"), ctx = target.getContext("2d");
+  target.width = frame.image.width; target.height = frame.image.height;
+  ctx.drawImage(frame.image, 0, 0);
+  const w = target.width, h = target.height, fontSize = Math.max(14, Math.round(w / 65));
+  ctx.lineWidth = Math.max(2, Math.round(w / 450));
+  const rows = ocr.items.map(item => {
+    ctx.strokeStyle = "#6edcdb";
+    const points = item.polygon;
+    ctx.beginPath();
+    points.forEach(([x, y], i) => i ? ctx.lineTo(x * w, y * h) : ctx.moveTo(x * w, y * h));
+    ctx.closePath(); ctx.stroke();
+    ctx.font = `600 ${fontSize}px system-ui`;
+    const label = item.text;
+    const labelWidth = Math.min(w, ctx.measureText(label).width + 10);
+    const x = Math.max(0, Math.min(item.box[0] * w, w - labelWidth));
+    const y = Math.max(fontSize + 8, item.box[1] * h);
+    ctx.fillStyle = "#6edcdb"; ctx.fillRect(x, y - fontSize - 8, labelWidth, fontSize + 8);
+    ctx.fillStyle = "#07120b"; ctx.fillText(label, x + 5, y - 5, labelWidth - 10);
+    const row = document.createElement("div"); row.className = "ocr-reading";
+    const text = document.createElement("span"), score = document.createElement("strong"), note = document.createElement("small");
+    // OCR text is untrusted input. Never insert it as HTML.
+    text.textContent = item.text;
+    score.textContent = item.confidence.toFixed(2);
+    note.textContent = item.position + (item.nearby_object ? ` · near ${item.nearby_object.label} in image` : "");
+    row.append(text, score, note); return row;
+  });
+  if (!rows.length) {
+    const empty = document.createElement("p"); empty.className = "hint";
+    empty.textContent = "No text passed the recognition threshold. Move closer or hold the camera steady.";
+    rows.push(empty);
+  }
+  $("ocr-readings").replaceChildren(...rows);
+  $("ocr-empty").hidden = true; target.hidden = false;
+  $("ocr-state").textContent = `Snapshot · frame ${frame.id}${ocr.truncated ? " · some regions skipped" : ""}`;
+  $("ocr-time").textContent = `OCR: ${ocr.ms} ms`;
+  $("ocr-age").textContent = `Age: ${((performance.now() - frame.captured) / 1000).toFixed(1)} s`;
+  lastOcr = {captured: frame.captured};
+}

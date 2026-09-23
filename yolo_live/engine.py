@@ -3,6 +3,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 import time
+import logging
 
 from .direction import CLASSES, position
 
@@ -19,9 +20,10 @@ def decode_jpeg(data):
 
 
 class YOLOBackend:
-    def __init__(self, weights, device, imgsz):
+    def __init__(self, weights, device, imgsz, ocr=None):
         self.weights, self.device, self.imgsz = weights, device, imgsz
         self.model = None
+        self.ocr = ocr
 
     def load(self):
         import numpy as np
@@ -37,7 +39,11 @@ class YOLOBackend:
         self.model.predict(np.zeros((480, 640, 3), dtype=np.uint8), device=self.device,
                            imgsz=self.imgsz, conf=0.25, verbose=False)
 
-    def infer(self, jpeg, confidence):
+        if self.ocr is not None:
+            logging.getLogger("yolo_live").info("Loading and warming up PP-OCRv5 detection + recognition...")
+            self.ocr.load()
+
+    def infer(self, jpeg, confidence, run_ocr=False):
         started = time.perf_counter()
         image = decode_jpeg(jpeg)
         height, width = image.shape[:2]
@@ -51,9 +57,17 @@ class YOLOBackend:
                    max(0, min(1, x2 / width)), max(0, min(1, y2 / height))]
             detections.append({"label": result.names[int(class_id)], "confidence": round(score, 4),
                                "box": box, "position": position(box)})
-        return {"detections": detections, "width": width, "height": height,
+        response = {"detections": detections, "width": width, "height": height,
                 "detector_ms": round((time.perf_counter() - started) * 1000, 1),
                 "model_inference_ms": round(float(result.speed.get("inference", 0)), 1)}
+        response["ocr"] = {"status": "skipped" if self.ocr is not None else "disabled"}
+        if run_ocr and self.ocr is not None:
+            try:
+                response["ocr"] = self.ocr.infer(image, detections)
+            except Exception:
+                logging.getLogger("yolo_live").exception("OCR failed; returning YOLO detections")
+                response["ocr"] = {"status": "error", "message": "OCR failed. Check the GB10 terminal."}
+        return response
 
 
 class SharedDetector:
@@ -65,12 +79,12 @@ class SharedDetector:
     async def load(self):
         await asyncio.get_running_loop().run_in_executor(self.executor, self.backend.load)
 
-    async def try_infer(self, jpeg, confidence):
+    async def try_infer(self, jpeg, confidence, run_ocr=False):
         if self.lock.locked():
             return None  # Other tabs retry with a NEW frame, rather than queue old frames.
         async with self.lock:
             job = asyncio.get_running_loop().run_in_executor(
-                self.executor, self.backend.infer, jpeg, confidence)
+                self.executor, self.backend.infer, jpeg, confidence, run_ocr)
             try:
                 return await asyncio.shield(job)
             except asyncio.CancelledError:
