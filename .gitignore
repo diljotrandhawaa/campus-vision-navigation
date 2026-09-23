@@ -79,3 +79,33 @@ tests/e2e/.test-data/
 cert.pem
 key.pem
 *.pem
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Credentials and local certificates
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+certs/
+certificates/
+
+# Downloaded models and generated outputs
+*.pt
+*.pth
+*.onnx
+*.engine
+*.safetensors
+*.ts
+runs/
+*.log
+*.zip
+*.bak
+yolo_test_result.jpg
