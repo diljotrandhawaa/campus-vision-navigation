@@ -1,4 +1,4 @@
-"""Local speech transcription and an aiohttp voice endpoint."""
+"""Local Whisper transcription and the voice HTTP endpoint."""
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -10,17 +10,17 @@ from urllib.parse import urlsplit
 
 from aiohttp import web
 
-from .targets import interpret_text
-
+# from .voice_commands import interpret_command
+from .voice_commands import interpret_command, warmup_command_matcher
 
 LOG = logging.getLogger("yolo_live.voice")
 VOICE = web.AppKey("voice_service", object)
 
-SAMPLE_RATE = 16000
+RATE = 16000
 MAX_SECONDS = 12
 MAX_BYTES = 2_000_000
 
-FORMATS = {
+AUDIO_FORMATS = {
     "audio/webm": "matroska",
     "audio/ogg": "ogg",
     "audio/mp4": "mov",
@@ -38,35 +38,35 @@ def decode_audio(payload, container_format):
     import numpy as np
 
     pieces = []
-    samples = 0
-    decoded_seconds = 0.0
+    sample_count = 0
+    duration = 0.0
 
     def append(frame):
-        nonlocal samples
+        nonlocal sample_count
         values = frame.to_ndarray().reshape(-1)
-        samples += values.size
-        if samples > MAX_SECONDS * SAMPLE_RATE:
-            raise ValueError("Record a command shorter than 12 seconds.")
+        sample_count += values.size
+        if sample_count > MAX_SECONDS * RATE:
+            raise ValueError("Keep recordings shorter than 12 seconds.")
         pieces.append(values.copy())
 
     try:
-        with av.open(BytesIO(payload), format=container_format) as container:
-            if not container.streams.audio:
-                raise ValueError("The upload contains no audio.")
+        with av.open(BytesIO(payload), format=container_format) as source:
+            if not source.streams.audio:
+                raise ValueError("The recording contains no audio.")
 
             resampler = av.AudioResampler(
-                format="fltp", layout="mono", rate=SAMPLE_RATE,
+                format="fltp", layout="mono", rate=RATE,
             )
 
-            for frame in container.decode(audio=0):
+            for frame in source.decode(audio=0):
                 if not frame.sample_rate or frame.sample_rate > 96000:
                     raise ValueError("Unsupported audio sample rate.")
                 if len(frame.layout.channels) > 2:
                     raise ValueError("Send mono or stereo microphone audio.")
 
-                decoded_seconds += frame.samples / frame.sample_rate
-                if decoded_seconds > MAX_SECONDS:
-                    raise ValueError("Record a command shorter than 12 seconds.")
+                duration += frame.samples / frame.sample_rate
+                if duration > MAX_SECONDS:
+                    raise ValueError("Keep recordings shorter than 12 seconds.")
 
                 for converted in resampler.resample(frame):
                     append(converted)
@@ -78,21 +78,21 @@ def decode_audio(payload, container_format):
         raise ValueError("The microphone recording could not be decoded.") from error
 
     if not pieces:
-        raise ValueError("The microphone recording is empty.")
+        raise ValueError("The recording is empty.")
 
     audio = np.concatenate(pieces).astype(np.float32, copy=False)
     if not np.isfinite(audio).all():
-        raise ValueError("The recording contains invalid audio samples.")
+        raise ValueError("Invalid audio samples.")
 
     return audio
 
 
 class SpeechBackend:
-    def __init__(self):
+    def __init__(self, device):
+        self.device = device
         self.model_id = os.environ.get(
             "VOICE_MODEL", "openai/whisper-large-v3-turbo",
         )
-        self.device = os.environ.get("VOICE_DEVICE", "cuda:0")
 
     def load(self):
         import torch
@@ -100,25 +100,24 @@ class SpeechBackend:
         from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
 
         if self.device.startswith("cuda") and not torch.cuda.is_available():
-            raise RuntimeError(
-                "Voice CUDA is unavailable. Use the working GB10 environment "
-                "or set VOICE_DEVICE=cpu."
-            )
+            raise RuntimeError("CUDA is unavailable for the speech model.")
 
         self.dtype = (
             torch.float16 if self.device.startswith("cuda") else torch.float32
         )
 
-        LOG.info("Loading local speech models: %s", self.model_id)
+        LOG.info("Loading speech models: %s on %s", self.model_id, self.device)
         self.vad = load_silero_vad().eval()
         self.processor = AutoProcessor.from_pretrained(self.model_id)
         self.model = AutoModelForSpeechSeq2Seq.from_pretrained(
             self.model_id,
-            torch_dtype=self.dtype,
+            dtype=self.dtype,
             use_safetensors=True,
             attn_implementation="sdpa",
         ).to(self.device).eval()
-        LOG.info("Speech models ready on %s", self.device)
+        LOG.info("Speech models ready.")
+        warmup_command_matcher()
+
 
     def interpret(self, payload, container_format, language):
         import torch
@@ -131,35 +130,37 @@ class SpeechBackend:
             spans = get_speech_timestamps(
                 torch.from_numpy(audio),
                 self.vad,
-                sampling_rate=SAMPLE_RATE,
+                sampling_rate=RATE,
                 min_speech_duration_ms=100,
                 min_silence_duration_ms=300,
                 speech_pad_ms=150,
             )
 
             if not spans:
-                result = interpret_text("")
+                result = interpret_command("")
             else:
-                # Trim only the leading/trailing silence. Preserve internal
-                # pauses so a correction or negation is not split away.
+                # Preserve internal pauses, corrections, and negations.
                 audio = audio[spans[0]["start"]:spans[-1]["end"]]
 
-                features = self.processor(
+                inputs = self.processor(
                     audio,
-                    sampling_rate=SAMPLE_RATE,
+                    sampling_rate=RATE,
                     return_tensors="pt",
                     return_attention_mask=True,
                 )
-                features = {
-                    key: value.to(
+                inputs = {
+                    name: tensor.to(
                         device=self.device,
-                        dtype=self.dtype if value.is_floating_point() else value.dtype,
+                        dtype=(
+                            self.dtype
+                            if tensor.is_floating_point() else tensor.dtype
+                        ),
                     )
-                    for key, value in features.items()
+                    for name, tensor in inputs.items()
                 }
 
                 tokens = self.model.generate(
-                    **features,
+                    **inputs,
                     task="transcribe",
                     language=None if language == "auto" else "en",
                     do_sample=False,
@@ -167,13 +168,11 @@ class SpeechBackend:
                     max_new_tokens=128,
                     condition_on_prev_tokens=False,
                 )
-
                 transcript = self.processor.batch_decode(
                     tokens, skip_special_tokens=True,
                 )[0].strip()
-                result = interpret_text(transcript)
+                result = interpret_command(transcript)
 
-        result["language_mode"] = language
         result["processing_ms"] = round(
             (time.perf_counter() - started) * 1000, 1,
         )
@@ -181,12 +180,13 @@ class SpeechBackend:
 
 
 class VoiceService:
-    def __init__(self):
-        self.backend = SpeechBackend()
-        self.lock = asyncio.Lock()
+    def __init__(self, device):
+        self.backend = SpeechBackend(device)
         self.executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="speech",
+            max_workers=1, thread_name_prefix="voice",
         )
+        self.pending = None
+        self.closing = False
 
     async def load(self):
         await asyncio.get_running_loop().run_in_executor(
@@ -194,75 +194,83 @@ class VoiceService:
         )
 
     async def interpret(self, payload, container_format, language):
-        if self.lock.locked():
+        if self.closing or (
+            self.pending is not None and not self.pending.done()
+        ):
             raise VoiceBusy()
 
-        async with self.lock:
-            job = asyncio.get_running_loop().run_in_executor(
-                self.executor,
-                self.backend.interpret,
-                payload,
-                container_format,
-                language,
+        # No await between admission and submission: requests cannot queue
+        # behind an already-running speech inference.
+        job = asyncio.get_running_loop().run_in_executor(
+            self.executor,
+            self.backend.interpret,
+            payload,
+            container_format,
+            language,
+        )
+        self.pending = job
+
+        # Retrieve errors even if the HTTP caller disconnects.
+        job.add_done_callback(
+            lambda completed: (
+                completed.exception() if not completed.cancelled() else None
             )
-            try:
-                return await asyncio.shield(job)
-            except asyncio.CancelledError:
-                # Cancelling a request cannot stop an active GPU operation.
-                # Keep ownership until it actually finishes.
-                try:
-                    await asyncio.shield(job)
-                finally:
-                    raise
+        )
+        # Disconnecting cannot cancel the underlying GPU operation.
+        return await asyncio.shield(job)
 
     async def close(self):
+        self.closing = True
         await asyncio.to_thread(
             self.executor.shutdown, wait=True, cancel_futures=True,
         )
 
 
-def json_reply(payload, status=200):
+def reply(request_id, status, message="", http_status=200, **fields):
     return web.json_response(
-        payload, status=status, headers={"Cache-Control": "no-store"},
+        {
+            "request_id": request_id,
+            "status": status,
+            "message": message,
+            **fields,
+        },
+        status=http_status,
+        headers={"Cache-Control": "no-store"},
     )
 
 
-async def interpret_request(request):
+async def voice_request(request):
     origin = request.headers.get("Origin")
     if origin and urlsplit(origin).netloc.lower() != request.host.lower():
         raise web.HTTPForbidden(text="Use the microphone on this app's page.")
 
-    # Custom header plus no CORS approval prevents cross-origin simple forms
-    # from submitting recordings to this endpoint.
     if request.headers.get("X-Voice-Request") != "1":
         raise web.HTTPForbidden(text="Missing voice request header.")
 
     request_id = request.headers.get("X-Request-ID", "")
     if not request_id or len(request_id) > 80:
-        raise web.HTTPBadRequest(text="Invalid voice request ID.")
+        raise web.HTTPBadRequest(text="Invalid request ID.")
 
     language = request.query.get("language", "en")
     if language not in ("en", "auto"):
-        raise web.HTTPBadRequest(text="Choose English or automatic transcription.")
+        raise web.HTTPBadRequest(text="Unsupported language mode.")
 
-    container_format = FORMATS.get(request.content_type)
+    container_format = AUDIO_FORMATS.get(request.content_type)
     if container_format is None:
-        return json_reply({
-            "request_id": request_id,
-            "status": "invalid_audio",
-            "message": "Use a WebM, Ogg, MP4, or WAV microphone recording.",
-        }, 415)
+        return reply(
+            request_id, "invalid_audio",
+            "Use WebM, Ogg, MP4, or WAV audio.", 415,
+        )
 
     try:
         payload = bytearray()
         async for chunk in request.content.iter_chunked(65536):
             payload.extend(chunk)
             if len(payload) > MAX_BYTES:
-                return json_reply({
-                    "request_id": request_id,
-                    "status": "invalid_audio",
-                    "message": "The recording is too large. Use a shorter command.",
-                }, 413)
+                return reply(
+                    request_id, "invalid_audio",
+                    "The recording is too large.", 413,
+                )
 
         if not payload:
             raise ValueError("The recording is empty.")
@@ -270,32 +278,29 @@ async def interpret_request(request):
         result = await request.app[VOICE].interpret(
             bytes(payload), container_format, language,
         )
-        return json_reply({"request_id": request_id, **result})
+        return web.json_response(
+            {"request_id": request_id, **result},
+            headers={"Cache-Control": "no-store"},
+        )
 
     except VoiceBusy:
-        return json_reply({
-            "request_id": request_id,
-            "status": "busy",
-            "message": "Speech processing is busy. Please try again shortly.",
-        }, 429)
+        return reply(
+            request_id, "busy",
+            "Speech processing is busy. Please try again shortly.", 429,
+        )
     except ValueError as error:
-        return json_reply({
-            "request_id": request_id,
-            "status": "invalid_audio",
-            "message": str(error),
-        }, 400)
+        return reply(request_id, "invalid_audio", str(error), 400)
     except Exception:
         LOG.exception("Speech processing failed")
-        return json_reply({
-            "request_id": request_id,
-            "status": "error",
-            "message": "Speech processing failed. Check the server terminal.",
-        }, 500)
+        return reply(
+            request_id, "error",
+            "Speech processing failed. Check the server terminal.", 500,
+        )
 
 
-def install_voice(app):
-    app[VOICE] = VoiceService()
-    app.router.add_post("/api/voice/interpret", interpret_request)
+def install_voice(app, device):
+    app[VOICE] = VoiceService(device)
+    app.router.add_post("/api/voice/interpret", voice_request)
 
     async def lifecycle(app):
         try:

@@ -13,7 +13,10 @@ from urllib.parse import urlsplit
 
 from aiohttp import web, WSMsgType
 
-from .direction import AlignmentController, CLASSES
+# from .direction import AlignmentController, CLASSES
+from .direction import CLASSES
+from .voice_direction import TargetController
+
 from .engine import SharedDetector, YOLOBackend
 
 LOG = logging.getLogger("yolo_live")
@@ -54,7 +57,8 @@ async def camera_socket(request):
     ws = web.WebSocketResponse(heartbeat=20, max_msg_size=2_500_000)
     await ws.prepare(request)
     request.app[SOCKETS].add(ws)
-    controller = AlignmentController()
+    # controller = AlignmentController()
+    controller = TargetController() 
     confidence, revision, metadata, count = 0.25, -1, None, 0
     ocr_enabled, last_ocr = True, float("-inf")
     try:
@@ -65,15 +69,41 @@ async def camera_socket(request):
                     data = json.loads(message.data)
                     if not isinstance(data, dict):
                         raise ValueError("Expected an object.")
+                    # if data.get("type") == "configure":
+                    #     if type(data.get("ocr", True)) is not bool:
+                    #         raise ValueError("OCR setting must be true or false.")
+                    #     target, confidence, revision = parse_settings(data)
+                    #     ocr_enabled = data.get("ocr", True)
+                    #     last_ocr = float("-inf")
+                    #     controller = AlignmentController(target=target)
+                    #     metadata = None
+                    #     await ws.send_json({"type": "configured", "revision": revision})
                     if data.get("type") == "configure":
                         if type(data.get("ocr", True)) is not bool:
                             raise ValueError("OCR setting must be true or false.")
-                        target, confidence, revision = parse_settings(data)
+
+                        target, new_confidence, new_revision = parse_settings(data)
+                        horizontal = data.get("horizontal")
+
+                        if horizontal not in (None, "left", "center", "right"):
+                            raise ValueError("Invalid target side.")
+                        if new_revision <= revision:
+                            raise ValueError("Configuration revision must increase.")
+
+                        confidence = new_confidence
+                        revision = new_revision
                         ocr_enabled = data.get("ocr", True)
                         last_ocr = float("-inf")
-                        controller = AlignmentController(target=target)
+                        controller = TargetController(
+                            target=target,
+                            horizontal=horizontal,
+                        )
                         metadata = None
-                        await ws.send_json({"type": "configured", "revision": revision})
+
+                        await ws.send_json({
+                            "type": "configured",
+                            "revision": revision,
+                        })
                     elif data.get("type") == "frame":
                         if type(data.get("id")) is not int or data["id"] < 1:
                             raise ValueError("Invalid frame number.")
@@ -122,9 +152,15 @@ async def camera_socket(request):
     return ws
 
 
-def create_app(detector, info=None):
+def create_app(detector, info=None, *, voice_device=None):
     app = web.Application(client_max_size=2_500_000)
-    app[DETECTOR], app[SOCKETS], app[INFO] = detector, set(), info or {}
+    # app[DETECTOR], app[SOCKETS], app[INFO] = detector, set(), info or {}
+    app[DETECTOR] = detector
+    app[SOCKETS] = set()
+    app[INFO] = {
+        **(info or {}),
+        "voice_enabled": voice_device is not None,
+    }
     app.router.add_get("/", index)
     app.router.add_get("/health", health)
     app.router.add_get("/ws", camera_socket)
@@ -144,6 +180,11 @@ def create_app(detector, info=None):
 
     app.cleanup_ctx.append(lifetime)
     app.on_shutdown.append(shutdown)
+
+    if voice_device is not None:
+        from .sp2text import install_voice
+        install_voice(app, voice_device)
+
     return app
 
 
@@ -185,6 +226,11 @@ def main():
                         help="Minimum text recognition score (default 0.75)")
     parser.add_argument("--ocr-max-regions", type=int, default=24,
                         help="Maximum text crops per OCR scan (default 24)")
+    parser.add_argument(
+        "--voice",
+        action="store_true",
+        help="Enable local Whisper voice target selection",
+    )
     args = parser.parse_args()
     if not math.isfinite(args.ocr_interval) or not 0.25 <= args.ocr_interval <= 30:
         parser.error("--ocr-interval must be between 0.25 and 30 seconds")
@@ -201,8 +247,22 @@ def main():
         from .ocr import OCRBackend
         ocr = None if args.no_ocr else OCRBackend(device, args.ocr_confidence, args.ocr_max_regions)
         detector = SharedDetector(YOLOBackend(str(Path(args.weights).expanduser()), device, args.imgsz, ocr))
-        app = create_app(detector, {"model": Path(args.weights).name, "device": str(device), "imgsz": args.imgsz,
-                                    "ocr_enabled": ocr is not None, "ocr_interval": args.ocr_interval})
+        # app = create_app(detector, {"model": Path(args.weights).name, "device": str(device), "imgsz": args.imgsz,
+        #                             "ocr_enabled": ocr is not None, "ocr_interval": args.ocr_interval})
+        app = create_app(
+            detector,
+            {
+                "model": Path(args.weights).name,
+                "device": str(device),
+                "imgsz": args.imgsz,
+                "ocr_enabled": ocr is not None,
+                "ocr_interval": args.ocr_interval,
+            },
+            voice_device=(
+                ("cpu" if device == "cpu" else f"cuda:{device}")
+                if args.voice else None
+            ),
+        )
         LOG.info("Loading YOLO once and warming up. First use may download weights/text-encoder assets.")
         LOG.info("Browser: %s://localhost:%d (forward this port from GB10)",
                  "http" if args.http else "https", args.port)

@@ -4,14 +4,60 @@ import math
 
 
 
+# CLASSES = (
+#     "table",
+#     "door", "glass door", "wooden door", "sliding door", "revolved door", "trapdoor", "door handle", "garage door", "brown door", "green door", "white door", "office door", "classroom door"
+#     "doorknob", "door handle", "handle door", "door lever", "door latch", "pull handle", "push handle", "push bar", "panic bar", "door pull", "door hardware", "door lock cylinder", "handicap push button"
+#     "elevator",
+#     "chair", "whiteboard", "sign", "stairs", "person", "backpack", "cardboard box", "trash can", "sofa", "bench", "window", "toilet", "monitor", "laptop", "keyboard", "printer"
+# )
+
 CLASSES = (
     "table",
-    "door", "glass door", "wooden door", "sliding door", "revolved door", "trapdoor", "door handle", "garage door", "brown door", "green door", "white door", "office door", "classroom door"
-    "doorknob", "door handle", "handle door", "door lever", "door latch", "pull handle", "push handle", "push bar", "panic bar", "door pull", "door hardware", "door lock cylinder", "handicap push button"
+    "door",
+    "glass door",
+    "wooden door",
+    "sliding door",
+    "revolving door",
+    "trapdoor",
+    "door handle",
+    "garage door",
+    "brown door",
+    "green door",
+    "white door",
+    "office door",
+    "classroom door",
+    "doorknob",
+    "handle door",
+    "door lever",
+    "door latch",
+    "pull handle",
+    "push handle",
+    "push bar",
+    "panic bar",
+    "door pull",
+    "door hardware",
+    "door lock cylinder",
+    "handicap push button",
     "elevator",
-    "chair", "whiteboard", "sign", "stairs", "person", "backpack", "cardboard box", "trash can", "sofa", "bench", "window", "toilet", "monitor", "laptop", "keyboard", "printer"
+    "elevator door",
+    "chair",
+    "whiteboard",
+    "sign",
+    "stairs",
+    "person",
+    "backpack",
+    "cardboard box",
+    "trash can",
+    "sofa",
+    "bench",
+    "window",
+    "toilet",
+    "monitor",
+    "laptop",
+    "keyboard",
+    "printer",
 )
-
 
 def position(box):
     x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2

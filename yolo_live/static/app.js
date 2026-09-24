@@ -9,6 +9,9 @@ let revision = 0, configuredRevision = -1, frameId = 0, nextTimer = null, frameC
 let lastCameraFrame = 0, lastVideoTime = -1, lastCapture = 0, lastResult = null;
 let sampleCount = 0, latencyTotal = 0, arrivals = [], hasSnapshot = false;
 
+let voiceEnabled = false;
+let voiceSide = null;
+
 function status(text, active = false) {
   $("status").textContent = text;
   $("status").classList.toggle("active", active);
@@ -36,6 +39,8 @@ function clearAnalysis(text = "Waiting for a fresh analysis") {
   $("frame-state").textContent = text;
 }
 function stop(message = "Camera stopped") {
+  window.voiceControls?.cancel("Voice stopped.");
+  voiceEnabled = false;
   ++generation;
   running = false;
   clearTimeout(nextTimer);
@@ -80,12 +85,16 @@ function watchVideoFrames(token) {
   });
 }
 
-function configure() {
+function configure(event) {
+  if (event?.target?.id === "target") {
+    voiceSide = null;
+    window.voiceControls?.cancel("Target changed manually.");
+  }
   revision++;
   clearAnalysis("Finding target…");
   clearOcr($("ocr-enabled").checked ? "Waiting for OCR scan" : "OCR off");
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({
-    type: "configure", target: $("target").value,
+    type: "configure", target: $("target").value,   horizontal: voiceSide,
     confidence: Number($("confidence").value), ocr: $("ocr-enabled").checked, revision
   }));
 }
@@ -193,6 +202,20 @@ function handleMessage(data) {
       ? `PP-OCRv5 · at least ${data.ocr_interval || 1}s between scans`
       : "OCR disabled at server startup.";
     $("device").textContent = `Device ${data.device} · inference size ${data.imgsz}`;
+        voiceEnabled = data.voice_enabled === true;
+
+    const previousTarget = $("target").value;
+    const classes = data.classes;
+    if (!Array.isArray(classes) || !classes.length) {
+      throw new Error("Server returned no target classes.");
+    }
+
+    $("target").replaceChildren(
+      ...classes.map(label => new Option(label, label))
+    );
+    $("target").value = classes.includes(previousTarget)
+      ? previousTarget : classes[0];
+
     configure();
     return;
   }
@@ -282,8 +305,15 @@ function render(data, frame) {
   context.fillStyle = direction.state === "centered" ? "#b4eb6d" : "#fff";
   context.font = `600 ${bannerSize}px system-ui`;
   context.fillText(direction.text, 14, h - 13);
-  instruction(direction.state, direction.text,
-    `Following: ${$("target").value}${direction.matches > 1 ? ` · ${direction.matches} matches; following one` : ""}`);
+  // instruction(direction.state, direction.text,
+  //   `Following: ${$("target").value}${direction.matches > 1 ? ` · ${direction.matches} matches; following one` : ""}`);
+  instruction(
+    direction.state,
+    direction.text,
+    `${direction.target_index !== null ? "Following" : "Requested"}: ${
+      $("target").value
+    }${voiceSide ? ` · ${voiceSide}` : ""} · ${direction.matches} matches`
+  );
   if (direction.raw_offset !== null) {
     const offset = direction.raw_offset;
     $("marker").hidden = false;
@@ -421,3 +451,40 @@ function renderOcr(ocr, frame) {
   $("ocr-age").textContent = `Age: ${((performance.now() - frame.captured) / 1000).toFixed(1)} s`;
   lastOcr = {captured: frame.captured};
 }
+
+
+
+
+window.voiceBridge = {
+  state() {
+    return {
+      token: `${generation}:${revision}`,
+      voiceEnabled,
+      ready: (
+        running &&
+        socket?.readyState === WebSocket.OPEN &&
+        configuredRevision === revision
+      )
+    };
+  },
+
+  select(target, horizontal = null) {
+    const supported = Array.from($("target").options)
+      .some(option => option.value === target);
+
+    if (
+      !supported ||
+      ![null, "left", "center", "right"].includes(horizontal)
+    ) {
+      throw new Error("Unsupported voice target.");
+    }
+
+    $("target").value = target;
+    voiceSide = horizontal;
+    configure();
+  },
+
+  reacquire() {
+    if (this.state().ready) configure();
+  }
+};
