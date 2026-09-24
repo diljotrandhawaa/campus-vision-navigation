@@ -16,6 +16,7 @@ from aiohttp import web, WSMsgType
 # from .direction import AlignmentController, CLASSES
 from .direction import CLASSES
 from .voice_direction import TargetController
+from .tracking import CameraTracker
 
 from .engine import SharedDetector, YOLOBackend
 
@@ -57,8 +58,8 @@ async def camera_socket(request):
     ws = web.WebSocketResponse(heartbeat=20, max_msg_size=2_500_000)
     await ws.prepare(request)
     request.app[SOCKETS].add(ws)
-    # controller = AlignmentController()
-    controller = TargetController() 
+    controller = TargetController()
+    tracker = CameraTracker()
     confidence, revision, metadata, count = 0.25, -1, None, 0
     ocr_enabled, last_ocr = True, float("-inf")
     try:
@@ -96,6 +97,7 @@ async def camera_socket(request):
                                 target=target,
                                 horizontal=horizontal,
                             )
+                            tracker = CameraTracker()
 
                         confidence = new_confidence
                         revision = new_revision
@@ -128,12 +130,12 @@ async def camera_socket(request):
                 try:
                     use_ocr = (request.app[INFO].get("ocr_enabled", False) and ocr_enabled
                                and time.monotonic() - last_ocr >= request.app[INFO].get("ocr_interval", 1.0))
-                    # result = await request.app[DETECTOR].try_infer(message.data, confidence, use_ocr)
                     result = await request.app[DETECTOR].try_infer(
                         message.data,
                         confidence,
                         use_ocr,
                         controller.target,
+                        tracker=tracker,
                     )
                     if result is None:
                         await ws.send_json({"type": "busy", **frame})
@@ -142,15 +144,15 @@ async def camera_socket(request):
                         last_ocr = time.monotonic()  # Minimum interval after completion; no catch-up work.
                     if not ocr_enabled:
                         result["ocr"] = {"status": "disabled"}
-                    direction = controller.update(result["detections"], time.monotonic())
-                    # direction = controller.update(
-                    #     result["detections"],
-                    #     time.monotonic(),
-                    #     # appearances=result.pop("_appearance", {}),
-                    # )
+                    direction = controller.update(
+                        result["detections"],
+                        time.monotonic(),
+                        tracking=result.get("tracking"),
+                        confidence=confidence,
+                    )
                     count += 1
-                    LOG.info("Frame %s | %s | %s | %.1f ms", frame["id"], controller.target,
-                             direction["text"], result["detector_ms"])
+                    LOG.info("Frame %s | %s | ID %s | %s | %.1f ms", frame["id"], controller.target,
+                             direction.get("target_track_id"), direction["text"], result["detector_ms"])
                     await ws.send_json({"type": "result", **frame, **result, "direction": direction,
                                         "count": count, "server_ms": round((time.perf_counter() - started) * 1000, 1)})
                 except (ValueError, OSError) as error:

@@ -1,4 +1,4 @@
-"""Shared YOLO, appearance extraction, and optional OCR."""
+"""Shared YOLO, per-camera BoT-SORT tracking, and optional OCR."""
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -6,8 +6,8 @@ from io import BytesIO
 import logging
 import time
 
-# from .appearance import AppearanceEncoder
 from .direction import CLASSES, position
+from .tracking import CameraTracker
 
 
 LOG = logging.getLogger("yolo_live")
@@ -40,7 +40,6 @@ class YOLOBackend:
         self.imgsz = imgsz
         self.ocr = ocr
         self.model = None
-        # self.appearance = AppearanceEncoder(device)
 
     def load(self):
         import numpy as np
@@ -62,14 +61,15 @@ class YOLOBackend:
             verbose=False,
         )
 
-        # LOG.info("Loading appearance model: %s", self.appearance.model_id)
-        # self.appearance.load()
+        # Fail at startup if the tracker dependency is missing, not after the
+        # browser has opened its camera. ReID is disabled: no extra AI weights.
+        from ultralytics.trackers.bot_sort import BOTSORT  # noqa: F401
 
         if self.ocr is not None:
             LOG.info("Loading and warming up OCR...")
             self.ocr.load()
 
-    def infer(self, jpeg, confidence, run_ocr=False, target=None):
+    def infer(self, jpeg, confidence, run_ocr=False, target=None, tracker=None):
         started = time.perf_counter()
         image = decode_jpeg(jpeg)
         height, width = image.shape[:2]
@@ -78,14 +78,28 @@ class YOLOBackend:
             source=image,
             device=self.device,
             imgsz=self.imgsz,
-            conf=confidence,
+            conf=min(confidence, CameraTracker.low_confidence) if tracker is not None else confidence,
             max_det=60,
             verbose=False,
         )[0]
 
+        boxes = result.boxes.cpu().numpy()
+        assignments, tracking = {}, None
+        tracking_started = time.perf_counter()
+        if tracker is not None:
+            assignments, tracking = tracker.update(
+                boxes, image, result.names, target, confidence, time.monotonic(),
+            )
+        tracking_ms = (time.perf_counter() - tracking_started) * 1000
+
         detections = []
-        for row in result.boxes.data.cpu().tolist():
+        for index, row in enumerate(boxes.data.tolist()):
             x1, y1, x2, y2, score, class_id = row[:6]
+            track_id = assignments.get(index)
+            # Keep the usual UI cutoff plus current tracked target observations
+            # below that cutoff, so confidence dips can preserve the lock.
+            if score < confidence and track_id is None:
+                continue
             box = [
                 max(0, min(1, x1 / width)),
                 max(0, min(1, y1 / height)),
@@ -97,11 +111,8 @@ class YOLOBackend:
                 "confidence": round(score, 4),
                 "box": box,
                 "position": position(box),
+                "track_id": track_id,
             })
-
-        # appearance_started = time.perf_counter()
-        # features = self.appearance.encode(image, detections, target)
-        # appearance_ms = (time.perf_counter() - appearance_started) * 1000
 
         response = {
             "detections": detections,
@@ -111,10 +122,8 @@ class YOLOBackend:
             "model_inference_ms": round(
                 float(result.speed.get("inference", 0)), 1,
             ),
-            # "appearance_ms": round(appearance_ms, 1),
-
-            # # Server-only data: removed before the WebSocket response.
-            # "_appearance": features,
+            "tracking_ms": round(tracking_ms, 1),
+            "tracking": tracking,
             "ocr": {
                 "status": "skipped" if self.ocr is not None else "disabled",
             },
@@ -147,7 +156,7 @@ class SharedDetector:
         )
 
     async def try_infer(
-        self, jpeg, confidence, run_ocr=False, target=None,
+        self, jpeg, confidence, run_ocr=False, target=None, tracker=None,
     ):
         if self.lock.locked():
             return None
@@ -160,6 +169,7 @@ class SharedDetector:
                 confidence,
                 run_ocr,
                 target,
+                tracker,
             )
             try:
                 return await asyncio.shield(job)
