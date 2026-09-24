@@ -234,7 +234,7 @@ def main():
     parser.add_argument("--key")
     parser.add_argument("--http", action="store_true", help="Plain HTTP, loopback only")
     parser.add_argument("--no-ocr", action="store_true", help="Start without OCR models")
-    parser.add_argument("--ocr-interval", type=float, default=0.25,
+    parser.add_argument("--ocr-interval", type=float, default=0.30,
                         help="Minimum seconds after each OCR scan (default 1)")
     parser.add_argument("--ocr-confidence", type=float, default=0.75,
                         help="Minimum text recognition score (default 0.75)")

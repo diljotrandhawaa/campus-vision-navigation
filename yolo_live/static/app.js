@@ -12,6 +12,29 @@ let sampleCount = 0, latencyTotal = 0, arrivals = [], hasSnapshot = false;
 let voiceEnabled = false;
 let voiceSide = null;
 
+let lastSpokenState = null;
+
+function speakDirection(direction) {
+  if (!("speechSynthesis" in window)) return;
+
+  // Speak only when the direction changes, not on every camera frame.
+  if (!["left", "right", "centered"].includes(direction.state)) return;
+  if (direction.state === lastSpokenState) return;
+
+  lastSpokenState = direction.state;
+
+  const messages = {
+    left: "Pan camera left",
+    right: "Pan camera right",
+    centered: "Target reached"
+  };
+
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.speak(
+    new SpeechSynthesisUtterance(messages[direction.state])
+  );
+}
+
 function status(text, active = false) {
   $("status").textContent = text;
   $("status").classList.toggle("active", active);
@@ -296,6 +319,7 @@ function render(data, frame) {
   canvas.classList.remove("stale"); $("expired").hidden = true;
   context.drawImage(frame.image, 0, 0);
   const w = canvas.width, h = canvas.height, direction = data.direction;
+  speakDirection(direction);
   const band = direction.state === "centered" ? direction.exit_band : direction.enter_band;
   const fontSize = Math.max(12, Math.round(w / 70));
   context.fillStyle = "rgba(244,216,117,0.12)";

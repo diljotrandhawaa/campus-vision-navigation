@@ -11,7 +11,12 @@
   <header><div class="brand"><span class="brand-icon">◎</span><div><h1>Live YOLO <span>WebUI</span></h1><p>Campus vision lab · Objects and text</p></div></div><div id="status" class="status">Camera stopped</div></header>
   <main>
     <aside class="settings">
-      <section><h2>01 / Camera</h2><label for="camera">Video source</label><select id="camera"><option value="">Default camera</option></select><p class="hint">Choose your laptop camera or a USB webcam connected to this computer.</p>
+      <section><h2>01 / Camera</h2>
+        <label class="check-label">
+        <input id="spoken-guidance" type="checkbox">
+        Speak camera directions
+        </label>
+        <label for="camera">Video source</label><select id="camera"><option value="">Default camera</option></select><p class="hint">Choose your laptop camera or a USB webcam connected to this computer.</p>
       <div class="buttons"><button id="start" class="primary">Start camera</button><button id="stop" disabled>Stop</button></div><p id="error" class="error" role="alert"></p></section>
       <section><h2>02 / Follow a target</h2><label for="target">Target object</label><select id="target"><option>whiteboard</option><option>door</option>
         <option>elevator door</option>

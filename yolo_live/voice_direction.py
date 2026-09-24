@@ -5,6 +5,10 @@ import math
 
 from .direction import AlignmentController, overlap, position
 
+import logging
+
+LOG = logging.getLogger("yolo_live.tracking")
+
 
 def unit_vector(values):
     if values is None:
@@ -47,10 +51,10 @@ class TargetController(AlignmentController):
     horizontal: str | None = None
 
     # Initial values: calibrate with your actual camera and objects.
-    tracking_threshold: float = 0.78
-    return_threshold: float = 0.84
+    tracking_threshold: float = 0.60
+    return_threshold: float = 0.60
     minimum_margin: float = 0.06
-    anchor_floor: float = 0.65
+    anchor_floor: float = 0.55
     confirmation_frames: int = 3
     confirmation_gap: float = 2.0
 
@@ -64,6 +68,16 @@ class TargetController(AlignmentController):
     pending_time: float | None = None
 
     stable_frames: int = 0
+
+    last_diag_key: str | None = None
+    last_diag_at: float = float("-inf")
+
+    def log_diagnostic(self, now, key, message, *args):
+        # Avoid printing the same issue for every processed frame.
+        if key != self.last_diag_key or now - self.last_diag_at >= 1.0:
+            LOG.info(message, *args)
+            self.last_diag_key = key
+            self.last_diag_at = now
 
     def clear_pending(self):
         self.pending_vector = None
@@ -95,7 +109,7 @@ class TargetController(AlignmentController):
         consistent = (
             self.pending_time is not None
             and now - self.pending_time <= self.confirmation_gap
-            and similarity(vector, self.pending_vector) >= 0.90
+            and similarity(vector, self.pending_vector) >= 0.80
             and nearby(box, self.pending_box)
         )
 
@@ -193,6 +207,13 @@ class TargetController(AlignmentController):
 
         # No timeout clears the visual reference.
         if not candidates:
+            self.log_diagnostic(
+                now,
+                "no_candidate",
+                "Tracking: no detection with target label %r; reference=%s",
+                self.target,
+                self.reference is not None,
+            )
             return self.uncertain(matches)
 
         scored = []
@@ -224,11 +245,31 @@ class TargetController(AlignmentController):
             self.tracking_threshold if continuous else self.return_threshold
         )
 
-        if (
-            score < threshold
-            or anchor_score < self.anchor_floor
-            or margin < self.minimum_margin
-        ):
+        failures = []
+        if score < threshold:
+            failures.append("similarity below threshold")
+        if anchor_score < self.anchor_floor:
+            failures.append("anchor similarity too low")
+        if margin < self.minimum_margin:
+            failures.append("competing detections too similar")
+
+        if failures:
+            self.log_diagnostic(
+                now,
+                "rejected:" + ",".join(failures),
+                "Tracking rejected %s: confidence=%.3f similarity=%.3f "
+                "required=%.3f anchor=%.3f required_anchor=%.3f "
+                "margin=%.3f required_margin=%.3f continuous=%s",
+                detection["label"],
+                detection["confidence"],
+                score,
+                threshold,
+                anchor_score,
+                self.anchor_floor,
+                margin,
+                self.minimum_margin,
+                continuous,
+            )
             return self.uncertain(matches)
 
         if not continuous:
