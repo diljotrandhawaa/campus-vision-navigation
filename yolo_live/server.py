@@ -142,12 +142,12 @@ async def camera_socket(request):
                         last_ocr = time.monotonic()  # Minimum interval after completion; no catch-up work.
                     if not ocr_enabled:
                         result["ocr"] = {"status": "disabled"}
-                    # direction = controller.update(result["detections"], time.monotonic())
-                    direction = controller.update(
-                        result["detections"],
-                        time.monotonic(),
-                        appearances=result.pop("_appearance", {}),
-                    )
+                    direction = controller.update(result["detections"], time.monotonic())
+                    # direction = controller.update(
+                    #     result["detections"],
+                    #     time.monotonic(),
+                    #     # appearances=result.pop("_appearance", {}),
+                    # )
                     count += 1
                     LOG.info("Frame %s | %s | %s | %.1f ms", frame["id"], controller.target,
                              direction["text"], result["detector_ms"])

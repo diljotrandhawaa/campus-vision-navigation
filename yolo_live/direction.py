@@ -148,3 +148,4 @@ class AlignmentController:
                 "offset": round(filtered, 4), "raw_offset": round(raw, 4),
                 "matches": len(candidates), "enter_band": self.enter_band,
                 "exit_band": self.exit_band}
+

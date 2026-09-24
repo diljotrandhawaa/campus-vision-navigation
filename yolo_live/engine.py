@@ -6,7 +6,7 @@ from io import BytesIO
 import logging
 import time
 
-from .appearance import AppearanceEncoder
+# from .appearance import AppearanceEncoder
 from .direction import CLASSES, position
 
 
@@ -40,7 +40,7 @@ class YOLOBackend:
         self.imgsz = imgsz
         self.ocr = ocr
         self.model = None
-        self.appearance = AppearanceEncoder(device)
+        # self.appearance = AppearanceEncoder(device)
 
     def load(self):
         import numpy as np
@@ -62,8 +62,8 @@ class YOLOBackend:
             verbose=False,
         )
 
-        LOG.info("Loading appearance model: %s", self.appearance.model_id)
-        self.appearance.load()
+        # LOG.info("Loading appearance model: %s", self.appearance.model_id)
+        # self.appearance.load()
 
         if self.ocr is not None:
             LOG.info("Loading and warming up OCR...")
@@ -99,9 +99,9 @@ class YOLOBackend:
                 "position": position(box),
             })
 
-        appearance_started = time.perf_counter()
-        features = self.appearance.encode(image, detections, target)
-        appearance_ms = (time.perf_counter() - appearance_started) * 1000
+        # appearance_started = time.perf_counter()
+        # features = self.appearance.encode(image, detections, target)
+        # appearance_ms = (time.perf_counter() - appearance_started) * 1000
 
         response = {
             "detections": detections,
@@ -111,10 +111,10 @@ class YOLOBackend:
             "model_inference_ms": round(
                 float(result.speed.get("inference", 0)), 1,
             ),
-            "appearance_ms": round(appearance_ms, 1),
+            # "appearance_ms": round(appearance_ms, 1),
 
-            # Server-only data: removed before the WebSocket response.
-            "_appearance": features,
+            # # Server-only data: removed before the WebSocket response.
+            # "_appearance": features,
             "ocr": {
                 "status": "skipped" if self.ocr is not None else "disabled",
             },
