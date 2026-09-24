@@ -24,8 +24,8 @@ class CameraTracker:
     # Starting values; tune using footage from the actual camera.
     low_confidence = 0.10
     high_confidence = 0.25
-    retention_seconds = 3.0
-    track_buffer = 90  # Also cap retention in processed frames.
+    retention_seconds = 10.0
+    track_buffer = 300  # Also cap retention in processed frames.
 
     def __init__(self):
         self._tracker = None
