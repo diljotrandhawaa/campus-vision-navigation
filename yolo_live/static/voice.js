@@ -24,9 +24,6 @@
       Command matching currently supports English.
       Recording stops after ten seconds.
     </p>
-    <div class="buttons">
-      <button id="voice-reacquire" type="button">Reacquire target</button>
-    </div>
   `;
   sidebar.append(panel);
 
@@ -229,11 +226,6 @@
     if (starting || processing) return;
     if (recorder?.state === "recording") recorder.stop();
     else startRecording();
-  });
-
-  panel.querySelector("#voice-reacquire").addEventListener("click", () => {
-    cancel("Reacquiring target.");
-    bridge.reacquire();
   });
 
   document.addEventListener("visibilitychange", () => {

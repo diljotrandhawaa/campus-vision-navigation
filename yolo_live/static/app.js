@@ -86,17 +86,34 @@ function watchVideoFrames(token) {
 }
 
 function configure(event) {
+  const newTarget = !event || event.target?.id === "target";
+
   if (event?.target?.id === "target") {
     voiceSide = null;
     window.voiceControls?.cancel("Target changed manually.");
   }
+
   revision++;
-  clearAnalysis("Finding target…");
-  clearOcr($("ocr-enabled").checked ? "Waiting for OCR scan" : "OCR off");
-  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({
-    type: "configure", target: $("target").value,   horizontal: voiceSide,
-    confidence: Number($("confidence").value), ocr: $("ocr-enabled").checked, revision
-  }));
+
+  clearAnalysis(
+    newTarget ? "Finding target…" : "Updating settings…"
+  );
+
+  clearOcr(
+    $("ocr-enabled").checked ? "Waiting for OCR scan" : "OCR off"
+  );
+
+  if (socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({
+      type: "configure",
+      target: $("target").value,
+      horizontal: voiceSide,
+      new_target: newTarget,
+      confidence: Number($("confidence").value),
+      ocr: $("ocr-enabled").checked,
+      revision
+    }));
+  }
 }
 
 async function start() {
@@ -482,9 +499,5 @@ window.voiceBridge = {
     $("target").value = target;
     voiceSide = horizontal;
     configure();
-  },
-
-  reacquire() {
-    if (this.state().ready) configure();
   }
 };

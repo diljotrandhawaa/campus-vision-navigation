@@ -69,18 +69,13 @@ async def camera_socket(request):
                     data = json.loads(message.data)
                     if not isinstance(data, dict):
                         raise ValueError("Expected an object.")
-                    # if data.get("type") == "configure":
-                    #     if type(data.get("ocr", True)) is not bool:
-                    #         raise ValueError("OCR setting must be true or false.")
-                    #     target, confidence, revision = parse_settings(data)
-                    #     ocr_enabled = data.get("ocr", True)
-                    #     last_ocr = float("-inf")
-                    #     controller = AlignmentController(target=target)
-                    #     metadata = None
-                    #     await ws.send_json({"type": "configured", "revision": revision})
                     if data.get("type") == "configure":
                         if type(data.get("ocr", True)) is not bool:
                             raise ValueError("OCR setting must be true or false.")
+
+                        new_target = data.get("new_target", True)
+                        if type(new_target) is not bool:
+                            raise ValueError("new_target must be true or false.")
 
                         target, new_confidence, new_revision = parse_settings(data)
                         horizontal = data.get("horizontal")
@@ -88,16 +83,24 @@ async def camera_socket(request):
                         if horizontal not in (None, "left", "center", "right"):
                             raise ValueError("Invalid target side.")
                         if new_revision <= revision:
-                            raise ValueError("Configuration revision must increase.")
+                            raise ValueError(
+                                "Configuration revision must increase."
+                            )
+
+                        if (
+                            new_target
+                            or controller.target != target
+                            or controller.horizontal != horizontal
+                        ):
+                            controller = TargetController(
+                                target=target,
+                                horizontal=horizontal,
+                            )
 
                         confidence = new_confidence
                         revision = new_revision
                         ocr_enabled = data.get("ocr", True)
                         last_ocr = float("-inf")
-                        controller = TargetController(
-                            target=target,
-                            horizontal=horizontal,
-                        )
                         metadata = None
 
                         await ws.send_json({
@@ -125,7 +128,13 @@ async def camera_socket(request):
                 try:
                     use_ocr = (request.app[INFO].get("ocr_enabled", False) and ocr_enabled
                                and time.monotonic() - last_ocr >= request.app[INFO].get("ocr_interval", 1.0))
-                    result = await request.app[DETECTOR].try_infer(message.data, confidence, use_ocr)
+                    # result = await request.app[DETECTOR].try_infer(message.data, confidence, use_ocr)
+                    result = await request.app[DETECTOR].try_infer(
+                        message.data,
+                        confidence,
+                        use_ocr,
+                        controller.target,
+                    )
                     if result is None:
                         await ws.send_json({"type": "busy", **frame})
                         continue
@@ -133,7 +142,12 @@ async def camera_socket(request):
                         last_ocr = time.monotonic()  # Minimum interval after completion; no catch-up work.
                     if not ocr_enabled:
                         result["ocr"] = {"status": "disabled"}
-                    direction = controller.update(result["detections"], time.monotonic())
+                    # direction = controller.update(result["detections"], time.monotonic())
+                    direction = controller.update(
+                        result["detections"],
+                        time.monotonic(),
+                        appearances=result.pop("_appearance", {}),
+                    )
                     count += 1
                     LOG.info("Frame %s | %s | %s | %.1f ms", frame["id"], controller.target,
                              direction["text"], result["detector_ms"])

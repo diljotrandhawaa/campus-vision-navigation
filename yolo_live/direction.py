@@ -57,6 +57,7 @@ CLASSES = (
     "laptop",
     "keyboard",
     "printer",
+    "empty chair"
 )
 
 def position(box):

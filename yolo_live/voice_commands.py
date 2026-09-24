@@ -44,6 +44,22 @@ def normalize(text):
     text = text.replace("’", "'").replace("'", "")
     return " ".join(re.sub(r"[^\w\s]", " ", text).split())
 
+def strip_politeness(text):
+    # Remove greetings and leading politeness, preserving the actual request.
+    text = re.sub(
+        r"^(?:(?:hi|hello|hey)(?: there)?\s+|please\s+)+",
+        "",
+        text,
+    )
+
+    # Remove trailing conversational phrases.
+    text = re.sub(
+        r"(?:\s+(?:for me|please|thanks|thank you))+$",
+        "",
+        text,
+    )
+
+    return text.strip()
 
 ALIASES = {normalize(label): label for label in SUPPORTED}
 
@@ -321,7 +337,8 @@ def _rank(text):
 
 
 def interpret_command(transcript):
-    text = normalize(transcript)
+    # text = normalize(transcript)
+    text = strip_politeness(normalize(transcript))
 
     if not text:
         return response(
